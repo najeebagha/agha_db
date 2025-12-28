@@ -1,43 +1,65 @@
 import 'dart:io';
-
 import 'package:agha_db/agha_db.dart';
 
 void main() async {
-  // await Hive.initFlutter(); // Init For Flutter apps
-  await FirebaseFirestore.instance.init();
+  // 1. ڈیٹا بیس کو شروع (Initialize) کریں
+  final firestore = FirebaseFirestore.instance;
+  await firestore.init(storagePath: "./my_local_db");
 
-  var usersRef1 = FirebaseFirestore.instance.collection('users');
+  print("--- Firestore Example ---");
 
-  await usersRef1.doc('user123').set({
-    'name': 'agha',
-    'age': 33,
-    'email': 'noormoh3@gmail.com',
+  // 2. ڈیٹا شامل کرنا (Add Data)
+  final productRef = firestore.collection('products');
+
+  await productRef.doc("laptop_001").set({
+    "productName": "Apple laptop",
+    "price": 27000,
+    "category": "ELECTRONICS",
   });
 
-  var querySnapshot = await usersRef1.where('age', isGreaterThan: 30).get();
+  await productRef.doc("shampoo_002").set({
+    "productName": "Bio amla Shampoo",
+    "price": 340,
+    "category": "COSMETICS",
+  });
+
+  // 3. Query اور Cursors کا استعمال (startAt / limit)
+  print("\nقیمت کے حساب سے ترتیب اور فلٹر:");
+  final querySnapshot = await productRef
+      .orderBy("price")
+      .startAt([340]) // 340 سے شروع کریں
+      .limit(2) // صرف 2 پروڈکٹس دکھائیں
+      .get();
 
   for (var doc in querySnapshot.docs) {
-    print("User: id ${doc.id}${doc.data()}");
+    print("نام: ${doc.get('productName')}, قیمت: ${doc.get('price')}");
   }
 
-  // --- Realtime Listen ---
-  usersRef1.snapshots().listen((snapshot) {
-    print("Database changed! New count: ${snapshot.docs.length}");
-  });
+  print("\n--- Storage Example ---");
 
-  //For Storage Refrence Upload File
+  // 4. فائل اپ لوڈنگ اور پراگریس (Firebase Storage)
+  final storage = FirebaseStorage.instance;
+  File myFile = File("./test_image.jpg"); // یقینی بنائیں کہ یہ فائل موجود ہو
 
-  File image = File("path_to_your_image.jpg");
+  if (await myFile.exists()) {
+    print("فائل اپ لوڈ ہو رہی ہے...");
 
-  await FirebaseStorage.instance
-      .ref()
-      .child("uploads")
-      .child("profile.jpg")
-      .putFile(image);
+    final uploadTask = storage.ref("uploads/profile.jpg").putFile(myFile);
 
-  await FirebaseStorage.instance
-      .ref()
-      .child("uploads")
-      .child("profile.png")
-      .getDownloadURL();
+    // اپ لوڈ پراگریس سنیں
+    uploadTask.snapshotEvents.listen((snapshot) {
+      double percent = snapshot.progress;
+      print("پراگریس: ${percent.toStringAsFixed(2)}%");
+
+      if (snapshot.state == TaskState.success) {
+        print("اپ لوڈ مکمل ہو گیا!");
+      }
+    });
+
+    // ڈاؤن لوڈ URL (لوکل پاتھ) حاصل کریں
+    String localUrl = await storage.ref("uploads/profile.jpg").getDownloadURL();
+    print("لوکل اسٹوریج پاتھ: $localUrl");
+  } else {
+    print("ٹیسٹ فائل './test_image.jpg' نہیں ملی۔");
+  }
 }

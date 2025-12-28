@@ -51,6 +51,12 @@ class Query {
   final bool _descending;
   final int? _limit;
 
+  // --- Cursors ---
+  final List<Object?>? _startAt;
+  final List<Object?>? _startAfter;
+  final List<Object?>? _endAt;
+  final List<Object?>? _endBefore;
+
   Query(
     this.path,
     this._box, {
@@ -58,10 +64,18 @@ class Query {
     String? orderByField,
     bool descending = false,
     int? limit,
+    List<Object?>? startAt,
+    List<Object?>? startAfter,
+    List<Object?>? endAt,
+    List<Object?>? endBefore,
   }) : _filters = filters ?? [],
        _orderByField = orderByField,
        _descending = descending,
-       _limit = limit;
+       _limit = limit,
+       _startAt = startAt,
+       _startAfter = startAfter,
+       _endAt = endAt,
+       _endBefore = endBefore;
 
   /// Creates and returns a new [Query] with additional filter constraints.
   ///
@@ -154,6 +168,27 @@ class Query {
     return _copyWith(limit: limit);
   }
 
+  /// Starts the query results at the provided values (inclusive).
+  Query startAt(List<Object?> values) {
+    return _copyWith(startAt: values);
+  }
+
+  /// Starts the query results after the provided values (exclusive).
+  Query startAfter(List<Object?> values) {
+    return _copyWith(startAfter: values);
+  }
+
+  /// Ends the query results at the provided values (inclusive).
+  Query endAt(List<Object?> values) {
+    return _copyWith(endAt: values);
+  }
+
+  /// Ends the query results before the provided values (exclusive).
+  /// Note: Firestore uses 'endBefore', so we use that naming convention.
+  Query endBefore(List<Object?> values) {
+    return _copyWith(endBefore: values);
+  }
+
   /// Executes the query and returns the results as a [QuerySnapshot].
   Future<QuerySnapshot> get() async {
     // Logic to simulate a query scan
@@ -210,6 +245,17 @@ class Query {
         }
         return _descending ? -comparison : comparison;
       });
+    } else {
+      // If no orderBy is provided, we sort by ID implicitly for cursor stability
+      results.sort((a, b) => a['__id__'].compareTo(b['__id__']));
+    }
+
+    // Apply Cursors (startAt, startAfter, endAt, endBefore)
+    if (_startAt != null ||
+        _startAfter != null ||
+        _endAt != null ||
+        _endBefore != null) {
+      results = _applyCursors(results);
     }
 
     // Apply Limit
@@ -226,18 +272,83 @@ class Query {
     return QuerySnapshot(docs);
   }
 
+  // Helper to apply cursor logic on sorted results
+  List<Map<String, dynamic>> _applyCursors(
+    List<Map<String, dynamic>> sortedResults,
+  ) {
+    final field = _orderByField ?? '__id__';
+
+    return sortedResults.where((doc) {
+      final val = doc[field];
+
+      // Comparison Helper: Returns negative if val < cursor, positive if val > cursor
+      int compareWithCursor(Object? cursorVal) {
+        if (val == null && cursorVal == null) return 0;
+        if (val == null) return _descending ? 1 : -1; // Null logic
+        if (cursorVal == null) return _descending ? -1 : 1;
+
+        if (val is Comparable) {
+          // We cast cursorVal to dynamic to allow compareTo to try matching types
+          return val.compareTo(cursorVal as dynamic);
+        }
+        return val.toString().compareTo(cursorVal.toString());
+      }
+
+      // 1. startAt (Inclusive)
+      if (_startAt != null && _startAt.isNotEmpty) {
+        final c = compareWithCursor(_startAt.first);
+        // If descending: we want val <= cursor. So if val > cursor (c > 0), exclude it.
+        // If ascending: we want val >= cursor. So if val < cursor (c < 0), exclude it.
+        if (_descending) {
+          if (c > 0) return false;
+        } else {
+          if (c < 0) return false;
+        }
+      }
+
+      // 2. startAfter (Exclusive)
+      if (_startAfter != null && _startAfter.isNotEmpty) {
+        final c = compareWithCursor(_startAfter.first);
+        // If descending: we want val < cursor. So if val >= cursor (c >= 0), exclude.
+        // If ascending: we want val > cursor. So if val <= cursor (c <= 0), exclude.
+        if (_descending) {
+          if (c >= 0) return false;
+        } else {
+          if (c <= 0) return false;
+        }
+      }
+
+      // 3. endAt (Inclusive)
+      if (_endAt != null && _endAt.isNotEmpty) {
+        final c = compareWithCursor(_endAt.first);
+        // If descending: we want val >= cursor. So if val < cursor (c < 0), stop/exclude.
+        // If ascending: we want val <= cursor. So if val > cursor (c > 0), stop/exclude.
+        if (_descending) {
+          if (c < 0) return false;
+        } else {
+          if (c > 0) return false;
+        }
+      }
+
+      // 4. endBefore (Exclusive)
+      if (_endBefore != null && _endBefore.isNotEmpty) {
+        final c = compareWithCursor(_endBefore.first);
+        // If descending: we want val > cursor. So if val <= cursor (c <= 0), exclude.
+        // If ascending: we want val < cursor. So if val >= cursor (c >= 0), exclude.
+        if (_descending) {
+          if (c <= 0) return false;
+        } else {
+          if (c >= 0) return false;
+        }
+      }
+
+      return true;
+    }).toList();
+  }
+
   /// Reads the documents referenced by this query.
   ///
   /// Notifies of documents at the current time and when any changes occur to the documents.
-  /// // this Method Returns QuerySnapshot and this class has size
-  ///  isEmpty and .docs() wich returns DocumentSnapshot
-  /// ```dart
-  /// usersRef1.snapshots().listen((snapshot) {
-  /// snapshot.docs   => List<DocumentSnapshot>
-  /// snapshot.isEmpty
-  /// snapshot.size
-  /// }
-  /// ```
   Stream<QuerySnapshot> snapshots() {
     final controller = StreamController<QuerySnapshot>();
     get().then((snap) => controller.add(snap));
@@ -265,6 +376,10 @@ class Query {
     String? orderByField,
     bool? descending,
     int? limit,
+    List<Object?>? startAt,
+    List<Object?>? startAfter,
+    List<Object?>? endAt,
+    List<Object?>? endBefore,
   }) {
     return Query(
       path,
@@ -273,6 +388,10 @@ class Query {
       orderByField: orderByField ?? _orderByField,
       descending: descending ?? _descending,
       limit: limit ?? _limit,
+      startAt: startAt ?? _startAt,
+      startAfter: startAfter ?? _startAfter,
+      endAt: endAt ?? _endAt,
+      endBefore: endBefore ?? _endBefore,
     );
   }
 }
