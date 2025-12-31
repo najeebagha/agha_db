@@ -212,6 +212,35 @@ class Query {
     return QuerySnapshot(docs);
   }
 
+  /// Reads the documents referenced by this query.
+  ///
+  /// Notifies of documents at the current time and when any changes occur to the documents.
+  /// // this Method Returns QuerySnapshot and this class has size
+  ///  isEmpty and .docs() wich returns DocumentSnapshot
+  /// ```dart
+  /// usersRef1.snapshots().listen((snapshot) {
+  /// snapshot.docs   => List<DocumentSnapshot>
+  /// snapshot.isEmpty
+  /// snapshot.size
+  /// }
+  /// ```
+
+  Stream<QuerySnapshot> snapshots() {
+    final controller = StreamController<QuerySnapshot>();
+    get().then((snap) => controller.add(snap));
+
+    // Watch box for changes
+    final subscription = _box.watch().listen((event) async {
+      // Ideally we would check if event.key matches path,
+      // but for mock simplicity we re-query.
+      final snap = await get();
+      controller.add(snap);
+    });
+
+    controller.onCancel = () => subscription.cancel();
+    return controller.stream;
+  }
+
   // --- Cursor Logic (Slicing) ---
   List<Map<String, dynamic>> _applyCursors(
     List<Map<String, dynamic>> sortedResults,
@@ -237,19 +266,21 @@ class Query {
         final c = compare(doc, _startAt.first);
         return _descending ? c <= 0 : c >= 0;
       });
-      if (index != -1)
+      if (index != -1) {
         startIndex = index;
-      else
+      } else {
         startIndex = sortedResults.length;
+      }
     } else if (_startAfter != null && _startAfter.isNotEmpty) {
       final index = sortedResults.indexWhere((doc) {
         final c = compare(doc, _startAfter.first);
         return _descending ? c < 0 : c > 0;
       });
-      if (index != -1)
+      if (index != -1) {
         startIndex = index;
-      else
+      } else {
         startIndex = sortedResults.length;
+      }
     }
 
     if (_endAt != null && _endAt.isNotEmpty) {
