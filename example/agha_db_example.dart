@@ -65,6 +65,9 @@ void main() async {
   }
 
   auth() async {
+       
+       await FirebaseAuth.instance.init();
+
     await FirebaseAuth.instance.createUserWithEmailAndPassword(
       email: 'noormoh3@gmail.com',
       password: '123123',
