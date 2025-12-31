@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:agha_db/agha_db.dart';
+import 'package:agha_db/src/auth.dart';
 
 void main() async {
   // 1. ڈیٹا بیس کو شروع (Initialize) کریں
@@ -61,5 +62,18 @@ void main() async {
     print("لوکل اسٹوریج پاتھ: $localUrl");
   } else {
     print("ٹیسٹ فائل './test_image.jpg' نہیں ملی۔");
+  }
+
+  auth() async {
+    await FirebaseAuth.instance.createUserWithEmailAndPassword(
+      email: 'noormoh3@gmail.com',
+      password: '123123',
+    );
+
+    FirebaseAuth.instance.signOut();
+    FirebaseAuth.instance.delete();
+    await FirebaseAuth.instance.sendPasswordResetEmail(
+      email: 'noormoh3@gmail.com',
+    );
   }
 }
