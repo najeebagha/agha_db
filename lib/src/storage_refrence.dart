@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:typed_data'; // Uint8List کے لیے ضروری
 import 'package:path_provider/path_provider.dart';
 
 /// **FirebaseStorage (لوکل ورژن):**
@@ -7,7 +8,6 @@ class FirebaseStorage {
   static FirebaseStorage get instance => FirebaseStorage();
   String get bucket => "local-storage-bucket";
 
-  // یہاں ہم چیک کریں گے کہ آیا پاتھ پاس کیا گیا ہے یا نہیں
   Reference ref([String? path]) {
     return Reference(path ?? "", isRoot: path == null || path.isEmpty);
   }
@@ -15,16 +15,13 @@ class FirebaseStorage {
 
 class Reference {
   final String _path;
-  final bool _isRoot; // یہ چیک کرنے کے لیے کہ پاتھ پاس ہوا ہے یا نہیں
+  final bool _isRoot;
 
   Reference(this._path, {bool isRoot = false}) : _isRoot = isRoot;
 
   String get name => _path.split('/').last;
   String get fullPath => _path;
 
-  /// پاتھ کی لاجک:
-  /// اگر پاتھ خالی ہے (Root) تو ApplicationDocumentsDirectory
-  /// اگر پاتھ دیا گیا ہے تو Directory.current (موجودہ پروجیکٹ ڈائریکٹری)
   Future<String> _getBasePath() async {
     if (_isRoot) {
       final directory = await getApplicationDocumentsDirectory();
@@ -36,23 +33,31 @@ class Reference {
 
   Reference child(String path) {
     String newPath = _path.isEmpty ? path : "$_path/$path";
-    // چائلڈ بناتے وقت ہم وہی روٹ سٹیٹس برقرار رکھیں گے
     return Reference(newPath, isRoot: _isRoot);
   }
 
+  /// **[putFile]**: فائل اپ لوڈ کرنے کے لیے
   UploadTask putFile(File file) {
     final controller = StreamController<TaskSnapshot>();
-    _startUpload(file, controller);
+    _handleUpload(controller, file: file);
     return UploadTask(controller.stream);
   }
 
-  Future<void> _startUpload(
-    File file,
-    StreamController<TaskSnapshot> controller,
-  ) async {
+  /// **[NEW] [putData]**: بائٹس (Uint8List) اپ لوڈ کرنے کے لیے
+  UploadTask putData(Uint8List data) {
+    final controller = StreamController<TaskSnapshot>();
+    _handleUpload(controller, data: data);
+    return UploadTask(controller.stream);
+  }
+
+  /// مشترکہ ہینڈلر جو فائل یا بائٹس دونوں کو سنبھالتا ہے
+  Future<void> _handleUpload(
+    StreamController<TaskSnapshot> controller, {
+    File? file,
+    Uint8List? data,
+  }) async {
     try {
       final basePath = await _getBasePath();
-      // اگر روٹ ہے تو پاتھ وہی ہوگا، ورنہ بیس پاتھ کے ساتھ جوڑا جائے گا
       final targetPath = _path.isEmpty ? basePath : "$basePath/$_path";
       final targetFile = File(targetPath);
 
@@ -60,23 +65,25 @@ class Reference {
         await targetFile.parent.create(recursive: true);
       }
 
-      int totalBytes = await file.length();
-      final inputStream = file.openRead();
-      final outputSink = targetFile.openWrite();
-
+      int totalBytes = file != null ? await file.length() : data!.length;
       int bytesTransferred = 0;
 
-      await for (var chunk in inputStream) {
-        outputSink.add(chunk);
-        bytesTransferred += chunk.length;
+      // آؤٹ پٹ سنک کھولیں
+      final outputSink = targetFile.openWrite();
 
-        controller.add(
-          TaskSnapshot(
-            bytesTransferred: bytesTransferred,
-            totalBytes: totalBytes,
-            state: TaskState.running,
-          ),
-        );
+      if (file != null) {
+        // فائل کو ٹکڑوں میں پڑھنا
+        final inputStream = file.openRead();
+        await for (var chunk in inputStream) {
+          outputSink.add(chunk);
+          bytesTransferred += chunk.length;
+          _updateProgress(controller, bytesTransferred, totalBytes);
+        }
+      } else if (data != null) {
+        // بائٹس کو ایک ساتھ یا ٹکڑوں میں لکھنا (یہاں سادگی کے لیے ایک ساتھ لکھا ہے)
+        outputSink.add(data);
+        bytesTransferred = totalBytes;
+        _updateProgress(controller, bytesTransferred, totalBytes);
       }
 
       await outputSink.close();
@@ -92,6 +99,20 @@ class Reference {
       controller.addError(e);
       await controller.close();
     }
+  }
+
+  void _updateProgress(
+    StreamController<TaskSnapshot> controller,
+    int transferred,
+    int total,
+  ) {
+    controller.add(
+      TaskSnapshot(
+        bytesTransferred: transferred,
+        totalBytes: total,
+        state: TaskState.running,
+      ),
+    );
   }
 
   Future<String> getDownloadURL() async {

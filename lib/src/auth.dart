@@ -25,7 +25,7 @@ class FirebaseAuth {
   }
 
   User? get currentUser => _currentUser;
-  Stream<User?> get authStateChanges => _authStateController.stream;
+  Stream<User?> authStateChanges() => _authStateController.stream;
   Box get _box => Hive.box(_boxName);
 
   void _recoverSession() {
