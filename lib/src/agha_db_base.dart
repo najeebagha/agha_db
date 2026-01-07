@@ -2,9 +2,17 @@ import 'dart:async';
 import 'package:hive/hive.dart';
 import 'package:uuid/uuid.dart';
 
-// --- FirebaseFirestore اور CollectionReference کا کوڈ وہی پرانا ہے (تبدیل کرنے کی ضرورت نہیں) ---
-// صرف Query کلاس اور نیچے DocumentSnapshot کے استعمال کو نوٹ کریں۔
+// --- Options Classes ---
+class SnapshotOptions {
+  const SnapshotOptions();
+}
 
+class SetOptions {
+  final bool? merge;
+  SetOptions({this.merge});
+}
+
+// --- FirebaseFirestore Core ---
 class FirebaseFirestore {
   static final FirebaseFirestore instance = FirebaseFirestore._();
   final String _boxName = 'firestore_db_core';
@@ -23,17 +31,17 @@ class FirebaseFirestore {
 
   Box get _box => Hive.box(_boxName);
 
-  CollectionReference collection(String collectionPath) {
-    return CollectionReference(collectionPath, _box);
+  CollectionReference<Map<String, dynamic>> collection(String collectionPath) {
+    return CollectionReference<Map<String, dynamic>>(collectionPath, _box);
   }
 
-  DocumentReference doc(String documentPath) {
-    return DocumentReference(documentPath, _box);
+  DocumentReference<Map<String, dynamic>> doc(String documentPath) {
+    return DocumentReference<Map<String, dynamic>>(documentPath, _box);
   }
 }
 
-/// **Query Class (Updated with Document Cursors)**
-class Query {
+/// **Query Class (Fully Loaded: Cursors + Generics + Converters)**
+class Query<T extends Object?> {
   final String path;
   final Box _box;
   final List<bool Function(Map<String, dynamic>)> _filters;
@@ -41,11 +49,17 @@ class Query {
   final bool _descending;
   final int? _limit;
 
-  // Cursors
+  // Cursors (User's original requirement)
   final List<Object?>? _startAt;
   final List<Object?>? _startAfter;
   final List<Object?>? _endAt;
   final List<Object?>? _endBefore;
+
+  // Converters
+  final T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+  _fromFirestore;
+  final Map<String, dynamic> Function(T value, SetOptions? options)?
+  _toFirestore;
 
   Query(
     this.path,
@@ -58,6 +72,9 @@ class Query {
     List<Object?>? startAfter,
     List<Object?>? endAt,
     List<Object?>? endBefore,
+    T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+    fromFirestore,
+    Map<String, dynamic> Function(T value, SetOptions? options)? toFirestore,
   }) : _filters = filters ?? [],
        _orderByField = orderByField,
        _descending = descending,
@@ -65,9 +82,35 @@ class Query {
        _startAt = startAt,
        _startAfter = startAfter,
        _endAt = endAt,
-       _endBefore = endBefore;
+       _endBefore = endBefore,
+       _fromFirestore = fromFirestore,
+       _toFirestore = toFirestore;
 
-  Query where(
+  /// **.withConverter()**
+  Query<R> withConverter<R>({
+    required R Function(Map<String, dynamic> snapshot, SnapshotOptions? options)
+    fromFirestore,
+    required Map<String, dynamic> Function(R value, SetOptions? options)
+    toFirestore,
+  }) {
+    return Query<R>(
+      path,
+      _box,
+      filters: _filters,
+      orderByField: _orderByField,
+      descending: _descending,
+      limit: _limit,
+      startAt: _startAt,
+      startAfter: _startAfter,
+      endAt: _endAt,
+      endBefore: _endBefore,
+      fromFirestore: fromFirestore,
+      toFirestore: toFirestore,
+    );
+  }
+
+  // --- Filtering ---
+  Query<T> where(
     String field, {
     Object? isEqualTo,
     Object? isNotEqualTo,
@@ -81,68 +124,83 @@ class Query {
     List<Object?>? whereNotIn,
     bool? isNull,
   }) {
-    // (Where کی لاجک وہی پرانی ہے جو آپ کے پاس ہے، جگہ بچانے کے لیے یہاں دوبارہ نہیں لکھ رہا)
-    // ... Copy exact logic from previous response ...
     final newFilters = List<bool Function(Map<String, dynamic>)>.from(_filters);
     newFilters.add((data) {
       final value = data[field];
       if (isEqualTo != null && value != isEqualTo) return false;
       if (isNotEqualTo != null && value == isNotEqualTo) return false;
-      // ... باقی تمام آپریٹرز ...
+      if (isLessThan != null && (value == null || value >= isLessThan))
+        return false;
+      if (isLessThanOrEqualTo != null &&
+          (value == null || value > isLessThanOrEqualTo))
+        return false;
+      if (isGreaterThan != null && (value == null || value <= isGreaterThan))
+        return false;
+      if (isGreaterThanOrEqualTo != null &&
+          (value == null || value < isGreaterThanOrEqualTo))
+        return false;
+      if (isNull != null && (value == null) != isNull) return false;
+
+      if (arrayContains != null) {
+        if (value is! List || !value.contains(arrayContains)) return false;
+      }
+      if (arrayContainsAny != null) {
+        if (value is! List ||
+            !value.any((item) => arrayContainsAny.contains(item)))
+          return false;
+      }
+      if (whereIn != null) {
+        if (!whereIn.contains(value)) return false;
+      }
+      if (whereNotIn != null) {
+        if (whereNotIn.contains(value)) return false;
+      }
       return true;
     });
     return _copyWith(filters: newFilters);
   }
 
-  Query orderBy(String field, {bool descending = false}) {
+  Query<T> orderBy(String field, {bool descending = false}) {
     return _copyWith(orderByField: field, descending: descending);
   }
 
-  Query limit(int limit) {
+  Query<T> limit(int limit) {
     return _copyWith(limit: limit);
   }
 
   // --- Standard Cursors ---
-  Query startAt(List<Object?> values) => _copyWith(startAt: values);
-  Query startAfter(List<Object?> values) => _copyWith(startAfter: values);
-  Query endAt(List<Object?> values) => _copyWith(endAt: values);
-  Query endBefore(List<Object?> values) => _copyWith(endBefore: values);
+  Query<T> startAt(List<Object?> values) => _copyWith(startAt: values);
+  Query<T> startAfter(List<Object?> values) => _copyWith(startAfter: values);
+  Query<T> endAt(List<Object?> values) => _copyWith(endAt: values);
+  Query<T> endBefore(List<Object?> values) => _copyWith(endBefore: values);
 
-  // --- NEW: Document Cursors (بالکل اصلی فائر بیس کی طرح) ---
-
-  /// Helper to extract cursor values from a DocumentSnapshot
+  // --- Document Cursors ---
   List<Object?> _valuesFromSnapshot(DocumentSnapshot documentSnapshot) {
     if (_orderByField != null) {
-      // اگر آپ نے orderBy("price") کیا ہے تو یہ اس ڈاکومنٹ سے price نکالے گا
       return [documentSnapshot.get(_orderByField)];
     } else {
-      // اگر کوئی آرڈر نہیں ہے تو یہ Document ID استعمال کرے گا
       return [documentSnapshot.id];
     }
   }
 
-  /// Starts the query at the provided [DocumentSnapshot].
-  Query startAtDocument(DocumentSnapshot documentSnapshot) {
+  Query<T> startAtDocument(DocumentSnapshot documentSnapshot) {
     return startAt(_valuesFromSnapshot(documentSnapshot));
   }
 
-  /// Starts the query after the provided [DocumentSnapshot].
-  Query startAfterDocument(DocumentSnapshot documentSnapshot) {
+  Query<T> startAfterDocument(DocumentSnapshot documentSnapshot) {
     return startAfter(_valuesFromSnapshot(documentSnapshot));
   }
 
-  /// Ends the query at the provided [DocumentSnapshot].
-  Query endAtDocument(DocumentSnapshot documentSnapshot) {
+  Query<T> endAtDocument(DocumentSnapshot documentSnapshot) {
     return endAt(_valuesFromSnapshot(documentSnapshot));
   }
 
-  /// Ends the query before the provided [DocumentSnapshot].
-  Query endBeforeDocument(DocumentSnapshot documentSnapshot) {
+  Query<T> endBeforeDocument(DocumentSnapshot documentSnapshot) {
     return endBefore(_valuesFromSnapshot(documentSnapshot));
   }
 
   // --- Execution Logic ---
-  Future<QuerySnapshot> get() async {
+  Future<QuerySnapshot<T>> get() async {
     final allKeys = _box.keys.cast<String>().where((key) {
       final segments = key.split('/');
       if (segments.length < 2) return false;
@@ -190,7 +248,7 @@ class Query {
       results.sort((a, b) => a['__id__'].compareTo(b['__id__']));
     }
 
-    // Apply Cursors (Slicing Logic)
+    // Apply Cursors
     if (_startAt != null ||
         _startAfter != null ||
         _endAt != null ||
@@ -203,45 +261,38 @@ class Query {
       results = results.sublist(0, _limit);
     }
 
+    // **Mapping to QueryDocumentSnapshot**
+    // اصلی فائر بیس میں Query کا رزلٹ ہمیشہ QueryDocumentSnapshot ہوتا ہے
+    // جس کا ڈیٹا null نہیں ہو سکتا۔
     final docs = results.map((data) {
       final id = data['__id__'] as String;
       data.remove('__id__');
-      return DocumentSnapshot(id, "$path/$id", data);
+
+      T convertedData;
+      if (_fromFirestore != null) {
+        convertedData = _fromFirestore(data, const SnapshotOptions());
+      } else {
+        convertedData = data as T;
+      }
+
+      return QueryDocumentSnapshot<T>(id, "$path/$id", convertedData);
     }).toList();
 
-    return QuerySnapshot(docs);
+    return QuerySnapshot<T>(docs);
   }
 
-  /// Reads the documents referenced by this query.
-  ///
-  /// Notifies of documents at the current time and when any changes occur to the documents.
-  /// // this Method Returns QuerySnapshot and this class has size
-  ///  isEmpty and .docs() wich returns DocumentSnapshot
-  /// ```dart
-  /// usersRef1.snapshots().listen((snapshot) {
-  /// snapshot.docs   => List<DocumentSnapshot>
-  /// snapshot.isEmpty
-  /// snapshot.size
-  /// }
-  /// ```
-
-  Stream<QuerySnapshot> snapshots() {
-    final controller = StreamController<QuerySnapshot>();
+  Stream<QuerySnapshot<T>> snapshots() {
+    final controller = StreamController<QuerySnapshot<T>>();
     get().then((snap) => controller.add(snap));
-
-    // Watch box for changes
-    final subscription = _box.watch().listen((event) async {
-      // Ideally we would check if event.key matches path,
-      // but for mock simplicity we re-query.
+    final subscription = _box.watch().listen((_) async {
       final snap = await get();
       controller.add(snap);
     });
-
     controller.onCancel = () => subscription.cancel();
     return controller.stream;
   }
 
-  // --- Cursor Logic (Slicing) ---
+  // --- Cursor Helper (The Logic you wanted to keep) ---
   List<Map<String, dynamic>> _applyCursors(
     List<Map<String, dynamic>> sortedResults,
   ) {
@@ -256,7 +307,6 @@ class Query {
       if (val == null && cursorVal == null) return 0;
       if (val == null) return _descending ? 1 : -1;
       if (cursorVal == null) return _descending ? -1 : 1;
-
       if (val is Comparable) return val.compareTo(cursorVal as dynamic);
       return val.toString().compareTo(cursorVal.toString());
     }
@@ -266,21 +316,13 @@ class Query {
         final c = compare(doc, _startAt.first);
         return _descending ? c <= 0 : c >= 0;
       });
-      if (index != -1) {
-        startIndex = index;
-      } else {
-        startIndex = sortedResults.length;
-      }
+      startIndex = (index != -1) ? index : sortedResults.length;
     } else if (_startAfter != null && _startAfter.isNotEmpty) {
       final index = sortedResults.indexWhere((doc) {
         final c = compare(doc, _startAfter.first);
         return _descending ? c < 0 : c > 0;
       });
-      if (index != -1) {
-        startIndex = index;
-      } else {
-        startIndex = sortedResults.length;
-      }
+      startIndex = (index != -1) ? index : sortedResults.length;
     }
 
     if (_endAt != null && _endAt.isNotEmpty) {
@@ -304,7 +346,7 @@ class Query {
     return sortedResults.sublist(startIndex, endIndex);
   }
 
-  Query _copyWith({
+  Query<T> _copyWith({
     List<bool Function(Map<String, dynamic>)>? filters,
     String? orderByField,
     bool? descending,
@@ -313,8 +355,11 @@ class Query {
     List<Object?>? startAfter,
     List<Object?>? endAt,
     List<Object?>? endBefore,
+    T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+    fromFirestore,
+    Map<String, dynamic> Function(T value, SetOptions? options)? toFirestore,
   }) {
-    return Query(
+    return Query<T>(
       path,
       _box,
       filters: filters ?? _filters,
@@ -325,53 +370,111 @@ class Query {
       startAfter: startAfter ?? _startAfter,
       endAt: endAt ?? _endAt,
       endBefore: endBefore ?? _endBefore,
+      fromFirestore: fromFirestore ?? _fromFirestore,
+      toFirestore: toFirestore ?? _toFirestore,
     );
   }
 }
 
-// CollectionReference, DocumentReference, etc... (No changes needed)
-class CollectionReference extends Query {
-  CollectionReference(super.path, super.box);
-  String get id => path.split('/').last;
-  DocumentReference? get parent {
-    final segments = path.split('/');
-    if (segments.length <= 1) return null;
-    final parentPath = segments.sublist(0, segments.length - 1).join('/');
-    return DocumentReference(parentPath, super._box);
+/// **CollectionReference**
+class CollectionReference<T extends Object?> extends Query<T> {
+  CollectionReference(
+    super.path,
+    super.box, {
+    super.fromFirestore,
+    super.toFirestore,
+  });
+
+  @override
+  CollectionReference<R> withConverter<R>({
+    required R Function(Map<String, dynamic> snapshot, SnapshotOptions? options)
+    fromFirestore,
+    required Map<String, dynamic> Function(R value, SetOptions? options)
+    toFirestore,
+  }) {
+    return CollectionReference<R>(
+      path,
+      _box,
+      fromFirestore: fromFirestore,
+      toFirestore: toFirestore,
+    );
   }
 
-  Future<DocumentReference> add(Map<String, dynamic> data) async {
-    final newId = const Uuid().v4();
-    final docRef = doc(newId);
+  DocumentReference<T> doc([String? pathId]) {
+    final docId = pathId ?? const Uuid().v4();
+    return DocumentReference<T>(
+      "$path/$docId",
+      _box,
+      fromFirestore: _fromFirestore,
+      toFirestore: _toFirestore,
+    );
+  }
+
+  Future<DocumentReference<T>> add(T data) async {
+    final docRef = doc();
     await docRef.set(data);
     return docRef;
   }
-
-  DocumentReference doc([String? pathId]) {
-    final docId = pathId ?? const Uuid().v4();
-    return DocumentReference("$path/$docId", super._box);
-  }
 }
 
-class DocumentReference {
+/// **DocumentReference**
+class DocumentReference<T extends Object?> {
   final String path;
   final Box _box;
-  DocumentReference(this.path, this._box);
+  final T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+  _fromFirestore;
+  final Map<String, dynamic> Function(T value, SetOptions? options)?
+  _toFirestore;
+
+  DocumentReference(
+    this.path,
+    this._box, {
+    T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+    fromFirestore,
+    Map<String, dynamic> Function(T value, SetOptions? options)? toFirestore,
+  }) : _fromFirestore = fromFirestore,
+       _toFirestore = toFirestore;
+
   String get id => path.split('/').last;
-  CollectionReference? get parent {
-    final segments = path.split('/');
-    if (segments.length <= 1) return null;
-    final parentPath = segments.sublist(0, segments.length - 1).join('/');
-    return CollectionReference(parentPath, _box);
+
+  DocumentReference<R> withConverter<R>({
+    required R Function(Map<String, dynamic> snapshot, SnapshotOptions? options)
+    fromFirestore,
+    required Map<String, dynamic> Function(R value, SetOptions? options)
+    toFirestore,
+  }) {
+    return DocumentReference<R>(
+      path,
+      _box,
+      fromFirestore: fromFirestore,
+      toFirestore: toFirestore,
+    );
   }
 
-  CollectionReference collection(String collectionPath) =>
-      CollectionReference("$path/$collectionPath", _box);
-  Future<void> set(Map<String, dynamic> data, [SetOptions? options]) async {
-    if (options?.merge == true) {
-      await update(data);
+  CollectionReference<Map<String, dynamic>> collection(String collectionPath) {
+    return CollectionReference<Map<String, dynamic>>(
+      "$path/$collectionPath",
+      _box,
+    );
+  }
+
+  Future<void> set(T data, [SetOptions? options]) async {
+    Map<String, dynamic> rawData;
+    if (_toFirestore != null) {
+      rawData = _toFirestore(data, options);
     } else {
-      await _box.put(path, data);
+      rawData = data as Map<String, dynamic>;
+    }
+
+    if (options?.merge == true) {
+      final existing = _box.get(path);
+      final Map<String, dynamic> currentData = existing != null
+          ? Map<String, dynamic>.from(existing)
+          : {};
+      currentData.addAll(rawData);
+      await _box.put(path, currentData);
+    } else {
+      await _box.put(path, rawData);
     }
   }
 
@@ -382,17 +485,21 @@ class DocumentReference {
   }
 
   Future<void> delete() async => await _box.delete(path);
-  Future<DocumentSnapshot> get() async {
-    final data = _box.get(path);
-    return DocumentSnapshot(
-      id,
-      path,
-      data != null ? Map<String, dynamic>.from(data) : null,
-    );
+
+  Future<DocumentSnapshot<T>> get() async {
+    final rawData = _box.get(path);
+    T? convertedData;
+    if (rawData != null) {
+      final map = Map<String, dynamic>.from(rawData);
+      convertedData = (_fromFirestore != null)
+          ? _fromFirestore(map, const SnapshotOptions())
+          : map as T;
+    }
+    return DocumentSnapshot<T>(id, path, convertedData);
   }
 
-  Stream<DocumentSnapshot> snapshots() {
-    final controller = StreamController<DocumentSnapshot>();
+  Stream<DocumentSnapshot<T>> snapshots() {
+    final controller = StreamController<DocumentSnapshot<T>>();
     get().then((snap) => controller.add(snap));
     final subscription = _box.watch(key: path).listen((event) async {
       final snap = await get();
@@ -403,31 +510,53 @@ class DocumentReference {
   }
 }
 
-class DocumentSnapshot {
+/// **DocumentSnapshot (Base Class)**
+/// اس میں ڈیٹا نل ہو سکتا ہے (کیونکہ ہو سکتا ہے ڈاکومنٹ موجود ہی نہ ہو)
+class DocumentSnapshot<T extends Object?> {
   final String id;
   final String _internalPath;
-  final Map<String, dynamic>? _data;
+  final T? _data;
+
   DocumentSnapshot(this.id, this._internalPath, this._data);
+
   bool get exists => _data != null;
-  Map<String, dynamic>? data() => _data;
-  DocumentReference get reference =>
-      FirebaseFirestore.instance.doc(_internalPath);
-  dynamic get(String field) => _data?[field];
+
+  /// Returns the data or null if not exists
+  T? data() => _data;
+
+  DocumentReference<T> get reference => FirebaseFirestore.instance
+      .doc(_internalPath)
+      .withConverter<T>(
+        fromFirestore: (snapshot, _) =>
+            snapshot as dynamic, // Simplified for mock
+        toFirestore: (value, _) => value as Map<String, dynamic>,
+      ); // نوٹ: یہ ایک سادہ ریفرنس ہے
+
+  dynamic get(String field) {
+    if (_data is Map) return (_data as Map)[field];
+    return null;
+  }
 }
 
-class QuerySnapshot {
-  final List<DocumentSnapshot> docs;
+/// **QueryDocumentSnapshot (New Addition)**
+/// یہ ہمیشہ Query کے رزلٹ میں آتا ہے، اس لیے اس کا ڈیٹا کبھی نل نہیں ہوتا
+class QueryDocumentSnapshot<T extends Object?> extends DocumentSnapshot<T> {
+  QueryDocumentSnapshot(super.id, super.internalPath, T super.data);
+
+  /// Overridden to return T (non-nullable) because it surely exists
+  @override
+  T data() {
+    return super.data()!;
+  }
+}
+
+/// **QuerySnapshot (Updated)**
+/// اب یہ QueryDocumentSnapshot کی لسٹ رکھتا ہے
+class QuerySnapshot<T extends Object?> {
+  final List<QueryDocumentSnapshot<T>> docs;
+
   QuerySnapshot(this.docs);
+
   int get size => docs.length;
   bool get isEmpty => docs.isEmpty;
-}
-
-class AggregateQuerySnapshot {
-  final int count;
-  AggregateQuerySnapshot(this.count);
-}
-
-class SetOptions {
-  final bool? merge;
-  SetOptions({this.merge});
 }

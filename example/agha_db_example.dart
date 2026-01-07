@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:agha_db/agha_db.dart';
-import 'package:agha_db/src/auth.dart';
 
 void main() async {
   // 1. ڈیٹا بیس کو شروع (Initialize) کریں
@@ -65,8 +64,7 @@ void main() async {
   }
 
   auth() async {
-       
-       await FirebaseAuth.instance.init();
+    await FirebaseAuth.instance.init();
 
     await FirebaseAuth.instance.createUserWithEmailAndPassword(
       email: 'noormoh3@gmail.com',
