@@ -85,6 +85,14 @@ class Query<T extends Object?> {
        _endBefore = endBefore,
        _fromFirestore = fromFirestore,
        _toFirestore = toFirestore;
+  String get id => path.split('/').last;
+
+  DocumentReference? get parent {
+    final segments = path.split('/');
+    if (segments.length <= 1) return null;
+    final parentPath = segments.sublist(0, segments.length - 1).join('/');
+    return DocumentReference(parentPath, _box);
+  }
 
   /// **.withConverter()**
   Query<R> withConverter<R>({
@@ -384,6 +392,10 @@ class CollectionReference<T extends Object?> extends Query<T> {
     super.fromFirestore,
     super.toFirestore,
   });
+
+  Future<int> get deleteCollection async {
+    return await _box.clear();
+  }
 
   @override
   CollectionReference<R> withConverter<R>({
