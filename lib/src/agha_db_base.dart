@@ -393,6 +393,7 @@ class CollectionReference<T extends Object?> extends Query<T> {
     super.toFirestore,
   });
 
+  ///Delete All Data in this **collection**
   Future<int> get deleteCollection async {
     return await _box.clear();
   }
