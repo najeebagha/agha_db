@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:hive/hive.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 class FirebaseAuth {
@@ -7,22 +8,33 @@ class FirebaseAuth {
 
   final String _boxName = 'firebase_auth_store';
 
-  User? _currentUser;
-  final StreamController<User?> _authStateController =
-      StreamController<User?>.broadcast();
-
   FirebaseAuth._();
 
   Future<void> init({String? storagePath}) async {
-    if (!Hive.isBoxOpen(_boxName)) {
-      if (storagePath != null) {
-        await Hive.openBox(_boxName, path: storagePath);
-      } else {
-        await Hive.openBox(_boxName);
-      }
+    String path;
+
+    // اگر پاتھ دیا گیا ہے (ونڈوز کے لیے)
+    if (storagePath != null) {
+      path = storagePath;
+    } else {
+      // اگر پاتھ نہیں دیا گیا تو اینڈرائیڈ کے لیے ڈیفالٹ ڈائریکٹری حاصل کریں
+      final directory = await getApplicationDocumentsDirectory();
+      path = directory.path;
     }
+
+    // Hive کو اس مخصوص پاتھ پر انیشلائز کریں
+    Hive.init(path);
+
+    if (!Hive.isBoxOpen(_boxName)) {
+      await Hive.openBox(_boxName);
+    }
+
     _recoverSession();
   }
+
+  User? _currentUser;
+  final StreamController<User?> _authStateController =
+      StreamController<User?>.broadcast();
 
   User? get currentUser => _currentUser;
   Stream<User?> authStateChanges() => _authStateController.stream;

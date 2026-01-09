@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:hive/hive.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 // --- Options Classes ---
@@ -20,12 +21,23 @@ class FirebaseFirestore {
   FirebaseFirestore._();
 
   Future<void> init({String? storagePath}) async {
+    String path;
+
+    // اگر پاتھ فراہم کیا گیا ہے (جیسے ونڈوز کے لیے)
+    if (storagePath != null) {
+      path = storagePath;
+    } else {
+      // اگر پاتھ نہیں دیا گیا تو اینڈرائیڈ/موبائل کی ڈائریکٹری حاصل کریں
+      final directory = await getApplicationDocumentsDirectory();
+      path = directory.path;
+    }
+
+    // ہائیو (Hive) کو اس پاتھ کے ساتھ شروع کریں
+    Hive.init(path);
+
+    // اب باکس اوپن کریں
     if (!Hive.isBoxOpen(_boxName)) {
-      if (storagePath != null) {
-        await Hive.openBox(_boxName, path: storagePath);
-      } else {
-        await Hive.openBox(_boxName);
-      }
+      await Hive.openBox(_boxName);
     }
   }
 
@@ -137,16 +149,20 @@ class Query<T extends Object?> {
       final value = data[field];
       if (isEqualTo != null && value != isEqualTo) return false;
       if (isNotEqualTo != null && value == isNotEqualTo) return false;
-      if (isLessThan != null && (value == null || value >= isLessThan))
+      if (isLessThan != null && (value == null || value >= isLessThan)) {
         return false;
+      }
       if (isLessThanOrEqualTo != null &&
-          (value == null || value > isLessThanOrEqualTo))
+          (value == null || value > isLessThanOrEqualTo)) {
         return false;
-      if (isGreaterThan != null && (value == null || value <= isGreaterThan))
+      }
+      if (isGreaterThan != null && (value == null || value <= isGreaterThan)) {
         return false;
+      }
       if (isGreaterThanOrEqualTo != null &&
-          (value == null || value < isGreaterThanOrEqualTo))
+          (value == null || value < isGreaterThanOrEqualTo)) {
         return false;
+      }
       if (isNull != null && (value == null) != isNull) return false;
 
       if (arrayContains != null) {
@@ -154,8 +170,9 @@ class Query<T extends Object?> {
       }
       if (arrayContainsAny != null) {
         if (value is! List ||
-            !value.any((item) => arrayContainsAny.contains(item)))
+            !value.any((item) => arrayContainsAny.contains(item))) {
           return false;
+        }
       }
       if (whereIn != null) {
         if (!whereIn.contains(value)) return false;
