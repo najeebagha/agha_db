@@ -9,7 +9,7 @@ void main() async {
   print("--- Firestore Example ---");
 
   // 2. ڈیٹا شامل کرنا (Add Data)
-  final productRef = firestore.collection('products');
+  CollectionReference productRef = firestore.collection('products');
 
   await productRef.doc("laptop_001").set({
     "productName": "Apple laptop",

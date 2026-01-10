@@ -3,6 +3,13 @@ import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
+enum Source { server, cache, serverAndCache }
+
+class GetOptions {
+  final Source source;
+  const GetOptions({this.source = Source.serverAndCache});
+}
+
 // --- Options Classes ---
 class SnapshotOptions {
   const SnapshotOptions();
@@ -61,7 +68,7 @@ class Query<T extends Object?> {
   final bool _descending;
   final int? _limit;
 
-  // Cursors (User's original requirement)
+  // Cursors
   final List<Object?>? _startAt;
   final List<Object?>? _startAfter;
   final List<Object?>? _endAt;
@@ -97,6 +104,7 @@ class Query<T extends Object?> {
        _endBefore = endBefore,
        _fromFirestore = fromFirestore,
        _toFirestore = toFirestore;
+
   String get id => path.split('/').last;
 
   DocumentReference? get parent {
@@ -225,7 +233,7 @@ class Query<T extends Object?> {
   }
 
   // --- Execution Logic ---
-  Future<QuerySnapshot<T>> get() async {
+  Future<QuerySnapshot<T>> get([GetOptions? options]) async {
     final allKeys = _box.keys.cast<String>().where((key) {
       final segments = key.split('/');
       if (segments.length < 2) return false;
@@ -287,8 +295,7 @@ class Query<T extends Object?> {
     }
 
     // **Mapping to QueryDocumentSnapshot**
-    // اصلی فائر بیس میں Query کا رزلٹ ہمیشہ QueryDocumentSnapshot ہوتا ہے
-    // جس کا ڈیٹا null نہیں ہو سکتا۔
+    // UPDATED: Now passing box and converters to allow correct generics
     final docs = results.map((data) {
       final id = data['__id__'] as String;
       data.remove('__id__');
@@ -300,7 +307,14 @@ class Query<T extends Object?> {
         convertedData = data as T;
       }
 
-      return QueryDocumentSnapshot<T>(id, "$path/$id", convertedData);
+      return QueryDocumentSnapshot<T>(
+        id,
+        "$path/$id",
+        convertedData,
+        _box,
+        fromFirestore: _fromFirestore,
+        toFirestore: _toFirestore,
+      );
     }).toList();
 
     return QuerySnapshot<T>(docs);
@@ -317,7 +331,7 @@ class Query<T extends Object?> {
     return controller.stream;
   }
 
-  // --- Cursor Helper (The Logic you wanted to keep) ---
+  // --- Cursor Helper (Unchanged) ---
   List<Map<String, dynamic>> _applyCursors(
     List<Map<String, dynamic>> sortedResults,
   ) {
@@ -410,7 +424,7 @@ class CollectionReference<T extends Object?> extends Query<T> {
     super.toFirestore,
   });
 
-  ///Delete All Data in this **collection**
+  /// Delete All Data in this **collection**
   Future<int> get deleteCollection async {
     return await _box.clear();
   }
@@ -516,7 +530,7 @@ class DocumentReference<T extends Object?> {
 
   Future<void> delete() async => await _box.delete(path);
 
-  Future<DocumentSnapshot<T>> get() async {
+  Future<DocumentSnapshot<T>> get([GetOptions? options]) async {
     final rawData = _box.get(path);
     T? convertedData;
     if (rawData != null) {
@@ -525,7 +539,15 @@ class DocumentReference<T extends Object?> {
           ? _fromFirestore(map, const SnapshotOptions())
           : map as T;
     }
-    return DocumentSnapshot<T>(id, path, convertedData);
+    // UPDATED: Passing box and converters
+    return DocumentSnapshot<T>(
+      id,
+      path,
+      convertedData,
+      _box,
+      fromFirestore: _fromFirestore,
+      toFirestore: _toFirestore,
+    );
   }
 
   Stream<DocumentSnapshot<T>> snapshots() {
@@ -540,45 +562,68 @@ class DocumentReference<T extends Object?> {
   }
 }
 
-/// **DocumentSnapshot (Base Class)**
-/// اس میں ڈیٹا نل ہو سکتا ہے (کیونکہ ہو سکتا ہے ڈاکومنٹ موجود ہی نہ ہو)
+/// **DocumentSnapshot (Updated to match original behavior)**
+/// Now generic safe and holds reference data
 class DocumentSnapshot<T extends Object?> {
   final String id;
   final String _internalPath;
   final T? _data;
 
-  DocumentSnapshot(this.id, this._internalPath, this._data);
+  // New fields to support proper Reference recreation
+  final Box _box;
+  final T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+  _fromFirestore;
+  final Map<String, dynamic> Function(T value, SetOptions? options)?
+  _toFirestore;
+
+  DocumentSnapshot(
+    this.id,
+    this._internalPath,
+    this._data,
+    this._box, {
+    T Function(Map<String, dynamic> data, SnapshotOptions? options)?
+    fromFirestore,
+    Map<String, dynamic> Function(T value, SetOptions? options)? toFirestore,
+  }) : _fromFirestore = fromFirestore,
+       _toFirestore = toFirestore;
 
   bool get exists => _data != null;
 
   /// Returns the data or null if not exists
   T? data() => _data;
 
-  dynamic operator [](Object field) {
+  // UPDATED: Now returns a properly typed DocumentReference
+  DocumentReference<T> get reference => DocumentReference<T>(
+    _internalPath,
+    _box,
+    fromFirestore: _fromFirestore,
+    toFirestore: _toFirestore,
+  );
+
+  // UPDATED: Allows bracket access like original SDK
+  dynamic operator [](Object field) => get(field);
+
+  dynamic get(Object field) {
     if (_data is Map) {
       return (_data as Map)[field];
     }
-    return null;
-  }
-
-  DocumentReference<T> get reference => FirebaseFirestore.instance
-      .doc(_internalPath)
-      .withConverter<T>(
-        fromFirestore: (snapshot, _) =>
-            snapshot as dynamic, // Simplified for mock
-        toFirestore: (value, _) => value as Map<String, dynamic>,
-      ); // نوٹ: یہ ایک سادہ ریفرنس ہے
-
-  dynamic get(String field) {
-    if (_data is Map) return (_data as Map)[field];
+    // In original SDK this might throw StateError if not a map or field missing,
+    // but returning null is safe for mock.
     return null;
   }
 }
 
-/// **QueryDocumentSnapshot (New Addition)**
+/// **QueryDocumentSnapshot (Updated)**
 /// یہ ہمیشہ Query کے رزلٹ میں آتا ہے، اس لیے اس کا ڈیٹا کبھی نل نہیں ہوتا
 class QueryDocumentSnapshot<T extends Object?> extends DocumentSnapshot<T> {
-  QueryDocumentSnapshot(super.id, super.internalPath, T super.data);
+  QueryDocumentSnapshot(
+    super.id,
+    super.internalPath,
+    T super.data,
+    super.box, {
+    super.fromFirestore,
+    super.toFirestore,
+  });
 
   /// Overridden to return T (non-nullable) because it surely exists
   @override
