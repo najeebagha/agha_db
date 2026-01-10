@@ -554,6 +554,13 @@ class DocumentSnapshot<T extends Object?> {
   /// Returns the data or null if not exists
   T? data() => _data;
 
+  dynamic operator [](Object field) {
+    if (_data is Map) {
+      return (_data as Map)[field];
+    }
+    return null;
+  }
+
   DocumentReference<T> get reference => FirebaseFirestore.instance
       .doc(_internalPath)
       .withConverter<T>(
