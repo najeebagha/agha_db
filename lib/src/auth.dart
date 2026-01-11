@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -13,51 +14,65 @@ class FirebaseAuth {
   Future<void> init({String? storagePath}) async {
     String path;
 
-    // اگر پاتھ دیا گیا ہے (ونڈوز کے لیے)
+    // پاتھ کی ترتیب
     if (storagePath != null) {
       path = storagePath;
     } else {
-      // اگر پاتھ نہیں دیا گیا تو اینڈرائیڈ کے لیے ڈیفالٹ ڈائریکٹری حاصل کریں
       final directory = await getApplicationDocumentsDirectory();
       path = directory.path;
     }
 
-    // Hive کو اس مخصوص پاتھ پر انیشلائز کریں
+    // Hive انیشیلائزیشن
     Hive.init(path);
 
+    // باکس اوپن کرنا
     if (!Hive.isBoxOpen(_boxName)) {
       await Hive.openBox(_boxName);
     }
 
-    _recoverSession();
+    // سیشن ریکور کرنا (یہ آپ کا موجودہ فنکشن ہے)
+    await _recoverSession();
+
+    // سب سے اہم اضافہ: اسٹریم کو پہلی ویلیو بھیجنا
+    // ہم Future.microtask استعمال کرتے ہیں تاکہ جب ایپ کی UI لیسن کرنا شروع کرے تو اسے ڈیٹا مل جائے
+    await Future.microtask(() {
+      final user =
+          currentUser; // یہ وہ یوزر ہے جو _recoverSession کے بعد میموری میں آیا
+      _authStateController.add(user);
+      // اگر یوزر نل (null) ہے تو بھی یہ 'null' بھیجے گا، جس سے لاگ ان اسکرین کھل جائے گی
+      log("Auth Initialized: User is ${user?.uid ?? 'not logged in'}");
+    });
   }
 
-  User? _currentUser;
   final StreamController<User?> _authStateController =
       StreamController<User?>.broadcast();
 
-  User? get currentUser => _currentUser;
+  /// یہ اسٹریم بالکل اصلی کی طرح کام کرے گی
   Stream<User?> authStateChanges() => _authStateController.stream;
-  Box get _box => Hive.box(_boxName);
 
-  void _recoverSession() {
+  Box get _box => Hive.box(_boxName);
+  User? _currentUser; // یہ آپ کا کلاس لیول متغیر ہے
+
+  User? get currentUser => _currentUser;
+
+  Future<void> _recoverSession() async {
     final sessionEmail = _box.get('current_session_email');
     if (sessionEmail != null) {
       final userData = _box.get('user_$sessionEmail');
       if (userData != null) {
-        // [UPDATED] یہاں ڈسپلے نیم بھی لوڈ کریں
         _currentUser = User(
           uid: userData['uid'],
           email: userData['email'],
           displayName: userData['displayName'],
         );
+        // اسٹریم میں بھیجیں
         _authStateController.add(_currentUser);
       }
     } else {
+      _currentUser = null;
       _authStateController.add(null);
     }
   }
-
   // --- سائن ان / سائن اپ (پرانے میتھڈز) ---
 
   Future<UserCredential> createUserWithEmailAndPassword({
